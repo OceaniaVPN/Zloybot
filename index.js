@@ -24,10 +24,21 @@ export default {
     }
 
     const message = update.message ?? update.channel_post;
+    const paidMediaItems = Array.isArray(message?.paid_media?.paid_media)
+      ? message.paid_media.paid_media
+      : [];
+    const paidMediaPhoto = paidMediaItems
+      .filter((item) => item?.type === "photo" && Array.isArray(item.photo) && item.photo.length)
+      .map((item) => item.photo[item.photo.length - 1])
+      .find(Boolean) ?? null;
+    const paidMediaVideo = paidMediaItems
+      .map((item) => item?.type === "video" ? item.video : null)
+      .find((value) => Boolean(value?.file_id)) ?? null;
+
     const media = {
-      photo: message?.photo?.length ? message.photo[message.photo.length - 1] : null,
+      photo: message?.photo?.length ? message.photo[message.photo.length - 1] : paidMediaPhoto,
       document: message?.document ?? null,
-      video: message?.video ?? null,
+      video: message?.video ?? paidMediaVideo,
       animation: message?.animation ?? null,
       audio: message?.audio ?? null,
       voice: message?.voice ?? null,
@@ -37,7 +48,10 @@ export default {
       checklist: message?.checklist ?? null,
     };
     const mediaType =
-      Object.entries(media).find(([, value]) => Boolean(value))?.[0] ?? null;
+      message?.photo?.length ? "photo" :
+      paidMediaPhoto ? "paid_media_photo" :
+      paidMediaVideo ? "paid_media_video" :
+      Object.entries(media).find(([key, value]) => key !== "paid_media" && Boolean(value))?.[0] ?? null;
 
     console.log("Telegram update diagnostic:", JSON.stringify({
       type: update.channel_post ? "channel_post" : update.message ? "message" : "other",
@@ -55,6 +69,10 @@ export default {
       hasVoice: Boolean(message?.voice),
       hasVideoNote: Boolean(message?.video_note),
       hasPaidMedia: Boolean(message?.paid_media),
+      paidMediaStarCount: message?.paid_media?.star_count ?? null,
+      paidMediaTypes: paidMediaItems.map((item) => item?.type ?? null),
+      paidMediaPhotoFileId: paidMediaPhoto?.file_id ?? null,
+      paidMediaVideoFileId: paidMediaVideo?.file_id ?? null,
       hasStory: Boolean(message?.story),
       hasChecklist: Boolean(message?.checklist),
       hasMediaGroup: Boolean(message?.media_group_id),
@@ -81,7 +99,7 @@ export default {
       return new Response("OK");
     }
 
-    const photo = message.photo;
+    const photo = message.photo?.length ? message.photo : (paidMediaPhoto ? [paidMediaPhoto] : null);
 
     if (!photo?.length) {
       console.log("Telegram update has no photo. Media type:", mediaType ?? "none");
@@ -93,7 +111,9 @@ export default {
           "Тип чата: " + (message.chat.type ?? "unknown") + "\\n" +
           "ID сообщения: " + (message.message_id ?? "нет") + "\\n" +
           "Тип медиа: " + (mediaType ?? "нет") + "\\n" +
-          "Фото в webhook: нет\\n" +
+          "Paid media типов: " + (paidMediaItems.length ? paidMediaItems.map((item) => item?.type ?? "unknown").join(", ") : "нет") + "\\n" +
+          "Paid media фото file_id: " + (paidMediaPhoto?.file_id ? "есть" : "нет") + "\\n" +
+          "Фото в webhook: " + (paidMediaPhoto?.file_id ? "есть (paid_media)" : "нет") + "\\n" +
           "Защищённый контент: " + (message.has_protected_content ? "да" : "нет") + "\\n" +
           "Поля message: " + Object.keys(message).join(", ");
 
@@ -103,26 +123,41 @@ export default {
         });
       }
 
-      // Do not use copyMessage here: Telegram can reject copying otherwise
-      // valid messages ("the message can't be copied"). If Telegram supplied
-      // a file_id, send that media directly instead.
+      // Do not use copyMessage here. Telegram explicitly disallows copying
+      // paid media. If paid media is already revealed in the webhook, its
+      // nested photo/video file_id can be sent directly.
       const directMethods = {
         document: "sendDocument",
         video: "sendVideo",
+        paid_media_video: "sendVideo",
         animation: "sendAnimation",
         audio: "sendAudio",
         voice: "sendVoice",
         video_note: "sendVideoNote",
       };
 
-      const directMethod = directMethods[mediaType];
-      const mediaValue = mediaType ? media[mediaType] : null;
-
-      if (directMethod && mediaValue?.file_id) {
-        await telegram(env.BOT_TOKEN, directMethod, {
+      if (paidMediaPhoto?.file_id) {
+        await telegram(env.BOT_TOKEN, "sendPhoto", {
           chat_id: chatId,
-          [mediaType]: mediaValue.file_id,
+          photo: paidMediaPhoto.file_id,
+          caption: "Фото: paid_media file_id.",
         });
+      } else {
+        const directMethod = directMethods[mediaType];
+        const mediaValue = mediaType ? media[mediaType] : null;
+
+        if (directMethod && mediaValue?.file_id) {
+          const field = mediaType === "paid_media_video" ? "video" : mediaType;
+          await telegram(env.BOT_TOKEN, directMethod, {
+            chat_id: chatId,
+            [field]: mediaValue.file_id,
+          });
+        } else if (message?.paid_media && paidMediaItems.some((item) => item?.type === "preview")) {
+          await telegram(env.BOT_TOKEN, "sendMessage", {
+            chat_id: chatId,
+            text: "Telegram прислал paid_media только как preview: само фото/видео ещё недоступно боту, поэтому вернуть файл пока нельзя.",
+          });
+        }
       }
 
       return new Response("OK");
