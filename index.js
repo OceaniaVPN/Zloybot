@@ -25,6 +25,16 @@ export default {
 
     // Telegram sends normal bot chats as "message" and channel posts as "channel_post".
     const message = update.message ?? update.channel_post;
+    console.log("Telegram update diagnostic:", JSON.stringify({
+      type: update.channel_post ? "channel_post" : update.message ? "message" : "other",
+      hasMessage: Boolean(message),
+      chatType: message?.chat?.type ?? null,
+      messageId: message?.message_id ?? null,
+      hasPhoto: Boolean(message?.photo?.length),
+      photoCount: message?.photo?.length ?? 0,
+      hasCaption: Boolean(message?.caption),
+      hasText: Boolean(message?.text)
+    }));
     if (!message?.chat?.id) {
       console.log("Unsupported Telegram update:", JSON.stringify(update));
       return new Response("OK");
@@ -44,6 +54,13 @@ export default {
     const photo = message.photo;
 
     if (!photo?.length) {
+      console.log("Telegram update has no photo. No media processing will run.");
+      if (message.chat.type === "private") {
+        await telegram(env.BOT_TOKEN, "sendMessage", {
+          chat_id: chatId,
+          text: "Я получил сообщение, но Telegram не прислал в webhook фотографию."
+        });
+      }
       return new Response("OK");
     }
 
