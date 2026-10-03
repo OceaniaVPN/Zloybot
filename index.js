@@ -72,12 +72,11 @@ export default {
     }
 
     const chatId = message.chat.id;
-    const messageId = message.message_id;
 
     if (message.text === "/start") {
       await telegram(env.BOT_TOKEN, "sendMessage", {
         chat_id: chatId,
-        text: "Отправь мне фотографию — я попробую вернуть её несколькими способами.",
+        text: "Отправь мне фотографию — я попробую вернуть её.",
       });
       return new Response("OK");
     }
@@ -88,44 +87,56 @@ export default {
       console.log("Telegram update has no photo. Media type:", mediaType ?? "none");
 
       if (message.chat.type === "private") {
+        const diagnostic =
+          "Диагностика Telegram\\n" +
+          "Тип update: " + (update.channel_post ? "channel_post" : update.message ? "message" : "other") + "\\n" +
+          "Тип чата: " + (message.chat.type ?? "unknown") + "\\n" +
+          "ID сообщения: " + (message.message_id ?? "нет") + "\\n" +
+          "Тип медиа: " + (mediaType ?? "нет") + "\\n" +
+          "Фото в webhook: нет\\n" +
+          "Защищённый контент: " + (message.has_protected_content ? "да" : "нет") + "\\n" +
+          "Поля message: " + Object.keys(message).join(", ");
+
         await telegram(env.BOT_TOKEN, "sendMessage", {
           chat_id: chatId,
-          text: mediaType
-            ? "Я получил сообщение, но это не поле photo. Тип медиа: " + mediaType + ". Смотри диагностику в Cloudflare Logs."
-            : "Я получил сообщение, но Telegram не прислал в webhook ни фотографию, ни другое медиа."
+          text: diagnostic,
         });
       }
 
-      if (messageId && mediaType) {
-        const copied = await telegram(env.BOT_TOKEN, "copyMessage", {
+      // Do not use copyMessage here: Telegram can reject copying otherwise
+      // valid messages ("the message can't be copied"). If Telegram supplied
+      // a file_id, send that media directly instead.
+      const directMethods = {
+        document: "sendDocument",
+        video: "sendVideo",
+        animation: "sendAnimation",
+        audio: "sendAudio",
+        voice: "sendVoice",
+        video_note: "sendVideoNote",
+      };
+
+      const directMethod = directMethods[mediaType];
+      const mediaValue = mediaType ? media[mediaType] : null;
+
+      if (directMethod && mediaValue?.file_id) {
+        await telegram(env.BOT_TOKEN, directMethod, {
           chat_id: chatId,
-          from_chat_id: chatId,
-          message_id: messageId,
+          [mediaType]: mediaValue.file_id,
         });
-        console.log("Non-photo media copy:", JSON.stringify({
-          mediaType,
-          ok: Boolean(copied?.ok),
-          status: copied?.status ?? null
-        }));
       }
+
       return new Response("OK");
     }
 
     const largest = photo[photo.length - 1];
     const results = [];
 
-    if (messageId) {
-      results.push(await telegram(env.BOT_TOKEN, "copyMessage", {
-        chat_id: chatId,
-        from_chat_id: chatId,
-        message_id: messageId,
-      }));
-    }
-
+    // copyMessage is intentionally not used. It is not guaranteed to work
+    // even when the incoming message itself is valid.
     results.push(await telegram(env.BOT_TOKEN, "sendPhoto", {
       chat_id: chatId,
       photo: largest.file_id,
-      caption: "Фото: способ 2 (file_id).",
+      caption: "Фото: file_id.",
     }));
 
     const fileInfo = await telegramJson(env.BOT_TOKEN, "getFile", {
@@ -145,13 +156,13 @@ export default {
           const formPhoto = new FormData();
           formPhoto.append("chat_id", String(chatId));
           formPhoto.append("photo", new Blob([bytes], { type: contentType }), "photo.jpg");
-          formPhoto.append("caption", "Фото: способ 3 (скачивание + загрузка).");
+          formPhoto.append("caption", "Фото: скачивание + загрузка.");
           results.push(await telegramForm(env.BOT_TOKEN, "sendPhoto", formPhoto));
 
           const formDocument = new FormData();
           formDocument.append("chat_id", String(chatId));
           formDocument.append("document", new Blob([bytes], { type: contentType }), "photo.jpg");
-          formDocument.append("caption", "Фото: способ 4 (document).");
+          formDocument.append("caption", "Фото: document.");
           results.push(await telegramForm(env.BOT_TOKEN, "sendDocument", formDocument));
         } else {
           console.error("Telegram file download failed:", fileResponse.status);
@@ -166,8 +177,8 @@ export default {
       await telegram(env.BOT_TOKEN, "sendMessage", {
         chat_id: chatId,
         text:
-          "Telegram доставил событие, но ни один способ получения/отправки фото не сработал. " +
-          "Если это защищённый контент, Telegram может вообще не передавать боту файл.",
+          "Telegram доставил событие, но не удалось отправить фото обратно. " +
+          "Проверь, что в webhook действительно есть поле photo и file_id.",
       });
     }
 
