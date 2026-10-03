@@ -25,13 +25,33 @@ export default {
 
     // Telegram sends normal bot chats as "message" and channel posts as "channel_post".
     const message = update.message ?? update.channel_post;
+    const media = {
+      photo: message?.photo?.length ? message.photo[message.photo.length - 1] : null,
+      document: message?.document ?? null,
+      video: message?.video ?? null,
+      animation: message?.animation ?? null,
+      audio: message?.audio ?? null,
+      voice: message?.voice ?? null,
+    };
+    const mediaType = Object.entries(media).find(([, value]) => Boolean(value))?.[0] ?? null;
+
     console.log("Telegram update diagnostic:", JSON.stringify({
       type: update.channel_post ? "channel_post" : update.message ? "message" : "other",
+      topLevelKeys: Object.keys(update),
       hasMessage: Boolean(message),
       chatType: message?.chat?.type ?? null,
       messageId: message?.message_id ?? null,
       hasPhoto: Boolean(message?.photo?.length),
       photoCount: message?.photo?.length ?? 0,
+      hasDocument: Boolean(message?.document),
+      hasVideo: Boolean(message?.video),
+      hasAnimation: Boolean(message?.animation),
+      hasAudio: Boolean(message?.audio),
+      hasVoice: Boolean(message?.voice),
+      hasMediaGroup: Boolean(message?.media_group_id),
+      mediaGroupId: message?.media_group_id ?? null,
+      protectedContent: Boolean(message?.has_protected_content),
+      mediaType,
       hasCaption: Boolean(message?.caption),
       hasText: Boolean(message?.text)
     }));
@@ -54,12 +74,26 @@ export default {
     const photo = message.photo;
 
     if (!photo?.length) {
-      console.log("Telegram update has no photo. No media processing will run.");
+      console.log("Telegram update has no photo. Media type:", mediaType ?? "none");
       if (message.chat.type === "private") {
         await telegram(env.BOT_TOKEN, "sendMessage", {
           chat_id: chatId,
-          text: "Я получил сообщение, но Telegram не прислал в webhook фотографию."
+          text: mediaType
+            ? `Я получил сообщение, но это не поле photo. Тип медиа: ${mediaType}. Смотри диагностику в Cloudflare Logs.`
+            : "Я получил сообщение, но Telegram не прислал в webhook ни фотографию, ни другое медиа."
         });
+      }
+      if (messageId && mediaType) {
+        const copied = await telegram(env.BOT_TOKEN, "copyMessage", {
+          chat_id: chatId,
+          from_chat_id: chatId,
+          message_id: messageId,
+        });
+        console.log("Non-photo media copy:", JSON.stringify({
+          mediaType,
+          ok: Boolean(copied?.ok),
+          status: copied?.status ?? null
+        }));
       }
       return new Response("OK");
     }
